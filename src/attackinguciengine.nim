@@ -61,6 +61,10 @@ proc evaluateAttackingScore(
     return 0.0
 
 proc selectBestMove(state: var AttackingUciState, limit: Limit): Move =
+  var limit = limit
+  limit.blackTimeSeconds -= 0.1
+  limit.whiteTimeSeconds -= 0.1
+
   let ourColor = state.currentGame.currentPosition().us
 
   # Get multipv results from external engine
