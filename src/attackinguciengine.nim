@@ -184,7 +184,9 @@ proc setOption(state: var AttackingUciState, params: seq[string]) =
       state.externalEngine.setOption("Threads", $newThreads)
       state.info fmt"Set Threads to: {newThreads}"
     else:
-      state.info fmt"Unknown option: {name}"
+      state.info fmt"Warning: Unknown option {name} is forwarded to internal engine"
+      doAssert state.externalEngine.initialized
+      state.externalEngine.setOption(name, value)
   else:
     state.info "Invalid setoption parameters"
 
