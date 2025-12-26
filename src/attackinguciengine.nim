@@ -1,4 +1,4 @@
-import std/[strutils, strformat, tables, options, algorithm, os]
+import std/[strutils, strformat, tables, options, algorithm, cmdline]
 import nimchess
 import chessattackingscore
 
@@ -274,9 +274,11 @@ proc uciLoop() =
   var enginePath = "stockfish"
   if paramCount() > 0:
     enginePath = paramStr(1)
+    for prefix in ["--enginePath:", "--enginePath="]:
+      if enginePath.len >= prefix.len and enginePath[0 ..< prefix.len] == prefix:
+        enginePath = enginePath[prefix.len .. ^1]
 
   var state = AttackingUciState(currentGame: newGame(), enginePath: enginePath)
-
   state.initializeExternalEngine()
 
   while true:
