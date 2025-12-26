@@ -235,7 +235,7 @@ proc go(state: var AttackingUciState, params: seq[string]) =
 
   try:
     let bestMove = selectBestMove(state, limit)
-    echo "bestmove ", bestMove
+    echo "bestmove ", bestMove.toUCI(state.currentGame.currentPosition())
   except CatchableError:
     state.info fmt"Error during search: {getCurrentExceptionMsg()}"
     # Fallback to a legal move
