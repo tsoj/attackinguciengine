@@ -6,7 +6,8 @@ type AttackingUciState = object
   externalEngine: UciEngine
   enginePath: string
   multipv: int = 4
-  minCentipawns: int = -10
+  minCentipawns: int = -20
+  maxCpLoss: int = 20
   currentGame: Game
   ourName: string = "AttackingEngine"
   oppName: string = "Opponent"
@@ -70,9 +71,10 @@ proc selectBestMove(state: var AttackingUciState, limit: Limit): Move =
   # Get multipv results from external engine
   let playResult = state.externalEngine.play(state.currentGame, limit)
 
-  var candidates: seq[tuple[move: Move, score: float, attacking: float]] = @[]
+  var initialCandidates: seq[tuple[move: Move, score: int, pv: seq[Move]]] = @[]
+  var bestScore = -20000
 
-  # Evaluate each PV line
+  # First pass: collect scores and find best score
   for multipvNum, uciInfo in playResult.pvs:
     if uciInfo.score.isSome and uciInfo.pv.isSome:
       let score = uciInfo.score.get()
@@ -81,7 +83,6 @@ proc selectBestMove(state: var AttackingUciState, limit: Limit): Move =
       if pvMoves.len == 0:
         continue
 
-      # Filter by minimum centipawn threshold
       let centipawns =
         case score.kind
         of skCp:
@@ -91,12 +92,22 @@ proc selectBestMove(state: var AttackingUciState, limit: Limit): Move =
         of skMateGiven:
           10000
 
-      if centipawns >= state.minCentipawns:
-        let attackingScore =
-          evaluateAttackingScore(state.currentGame, pvMoves, ourColor, state.ourName)
-        candidates.add((pvMoves[0], centipawns.float, attackingScore))
+      if centipawns > bestScore:
+        bestScore = centipawns
 
-        state.info fmt"PV {multipvNum}: {pvMoves[0]} (cp: {centipawns}, attacking: {attackingScore:.3f})"
+      initialCandidates.add((pvMoves[0], centipawns, pvMoves))
+
+  var candidates: seq[tuple[move: Move, score: float, attacking: float]] = @[]
+
+  # Second pass: filter and evaluate attacking score
+  for candidate in initialCandidates:
+    if candidate.score >= state.minCentipawns and
+        (bestScore - candidate.score) <= state.maxCpLoss:
+      let attackingScore =
+        evaluateAttackingScore(state.currentGame, candidate.pv, ourColor, state.ourName)
+      candidates.add((candidate.move, candidate.score.float, attackingScore))
+
+      state.info fmt"PV: {candidate.move} (cp: {candidate.score}, diff: {bestScore - candidate.score}, attacking: {attackingScore:.3f})"
 
   if candidates.len == 0:
     state.info "No valid candidates found, using best move from engine"
@@ -117,11 +128,12 @@ proc selectBestMove(state: var AttackingUciState, limit: Limit): Move =
 proc uci(state: var AttackingUciState) =
   echo "id name ", state.ourName
   echo "id author UCI Attacking Engine"
-  echo "option name Engine type string default stockfish"
-  echo "option name internalmultipv type spin default 4 min 1 max 100"
-  echo "option name Hash type spin default 4 min 1 max 10000"
-  echo "option name Threads type spin default 1 min 1 max 100"
-  echo "option name MinCentipawns type spin default -10 min -1000 max 1000"
+  echo fmt"option name Engine type string default stockfish"
+  echo fmt"option name internalmultipv type spin default {state.multipv} min 1 max 100"
+  echo fmt"option name Hash type spin default 4 min 1 max 10000"
+  echo fmt"option name Threads type spin default 1 min 1 max 100"
+  echo fmt"option name MinCentipawns type spin default {state.minCentipawns} min -1000 max 1000"
+  echo fmt"option name MaxCpLoss type spin default {state.maxCpLoss} min 0 max 10000"
   echo "uciok"
 
 proc setOption(state: var AttackingUciState, params: seq[string]) =
@@ -149,6 +161,11 @@ proc setOption(state: var AttackingUciState, params: seq[string]) =
       if newMin >= -1000 and newMin <= 1000:
         state.minCentipawns = newMin
         state.info fmt"Set MinCentipawns to: {newMin}"
+    of "maxcploss":
+      let newMax = value.parseInt
+      if newMax >= 0 and newMax <= 10000:
+        state.maxCpLoss = newMax
+        state.info fmt"Set MaxCpLoss to: {newMax}"
     of "hash":
       let newHash = value.parseInt
       if state.externalEngine.initialized:
