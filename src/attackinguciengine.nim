@@ -1,4 +1,4 @@
-import std/[strutils, strformat, tables, options, algorithm]
+import std/[strutils, strformat, tables, options, algorithm, os]
 import nimchess
 import chessattackingscore
 
@@ -128,7 +128,7 @@ proc selectBestMove(state: var AttackingUciState, limit: Limit): Move =
   return bestCandidate.move
 
 proc uci(state: var AttackingUciState) =
-  state.initializeExternalEngine()
+  doAssert state.externalEngine.initialized
   echo "id name ", state.externalEngine.name, " as attackinguciengine"
   echo "id author ", state.externalEngine.author, " + Jost Triller"
   echo fmt"option name Engine type string default {state.enginePath}"
@@ -271,7 +271,13 @@ proc go(state: var AttackingUciState, params: seq[string]) =
       echo "bestmove 0000"
 
 proc uciLoop() =
-  var state = AttackingUciState(currentGame: newGame())
+  var enginePath = "stockfish"
+  if paramCount() > 0:
+    enginePath = paramStr(1)
+
+  var state = AttackingUciState(currentGame: newGame(), enginePath: enginePath)
+
+  state.initializeExternalEngine()
 
   while true:
     try:
