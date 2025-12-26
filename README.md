@@ -44,6 +44,6 @@ The engine supports the following UCI options:
 
 ## License
 
-MIT
+MIT License
 
 Copyright (c) 2025 Jost Triller
