@@ -4,10 +4,12 @@ import chessattackingscore
 
 type AttackingUciState = object
   externalEngine: UciEngine
-  enginePath: string
-  multipv: int = 4
+  enginePath: string = "stockfish"
+  multipv: int = 3
   minCentipawns: int = -20
-  maxCpLoss: int = 20
+  maxCpLoss: int = 50
+  hash: int = 4
+  threads: int = 1
   currentGame: Game
   ourName: string = "AttackingEngine"
   oppName: string = "Opponent"
@@ -16,12 +18,12 @@ proc info(state: AttackingUciState, s: string) =
   echo "info string ", s
 
 proc initializeExternalEngine(state: var AttackingUciState) =
-  if state.enginePath == "":
-    state.info "No external engine specified, using stockfish"
-    state.enginePath = "stockfish"
+  doAssert state.enginePath.len > 0
 
   state.externalEngine = newUciEngine(state.enginePath)
   state.externalEngine.setOption("MultiPV", $state.multipv)
+  state.externalEngine.setOption("Hash", $state.hash)
+  state.externalEngine.setOption("Threads", $state.threads)
   state.info fmt"Initialized external engine: {state.externalEngine.name}"
 
 proc createGameFromPv(
@@ -63,8 +65,8 @@ proc evaluateAttackingScore(
 
 proc selectBestMove(state: var AttackingUciState, limit: Limit): Move =
   var limit = limit
-  limit.blackTimeSeconds -= 0.1
-  limit.whiteTimeSeconds -= 0.1
+  limit.blackTimeSeconds -= 0.05
+  limit.whiteTimeSeconds -= 0.05
 
   let ourColor = state.currentGame.currentPosition().us
 
@@ -126,12 +128,13 @@ proc selectBestMove(state: var AttackingUciState, limit: Limit): Move =
   return bestCandidate.move
 
 proc uci(state: var AttackingUciState) =
-  echo "id name ", state.ourName
-  echo "id author UCI Attacking Engine"
-  echo fmt"option name Engine type string default stockfish"
-  echo fmt"option name internalmultipv type spin default {state.multipv} min 1 max 100"
-  echo fmt"option name Hash type spin default 4 min 1 max 10000"
-  echo fmt"option name Threads type spin default 1 min 1 max 100"
+  state.initializeExternalEngine()
+  echo "id name ", state.externalEngine.name, " as attackinguciengine"
+  echo "id author ", state.externalEngine.author, " + Jost Triller"
+  echo fmt"option name Engine type string default {state.enginePath}"
+  echo fmt"option name Internalmultipv type spin default {state.multipv} min 1 max 100"
+  echo fmt"option name Hash type spin default {state.hash} min 1 max 100000"
+  echo fmt"option name Threads type spin default {state.threads} min 1 max 1000"
   echo fmt"option name MinCentipawns type spin default {state.minCentipawns} min -1000 max 1000"
   echo fmt"option name MaxCpLoss type spin default {state.maxCpLoss} min 0 max 10000"
   echo "uciok"
@@ -147,14 +150,16 @@ proc setOption(state: var AttackingUciState, params: seq[string]) =
 
     case name
     of "engine":
-      state.enginePath = value
-      state.info fmt"Set external engine to: {state.enginePath}"
+      if value.len > 0:
+        state.enginePath = value
+        state.info fmt"Set external engine to: {state.enginePath}"
+        state.initializeExternalEngine
     of "internalmultipv":
       let newMultiPv = value.parseInt
       if newMultiPv >= 1 and newMultiPv <= 100:
         state.multipv = newMultiPv
-        if state.externalEngine.initialized:
-          state.externalEngine.setOption("MultiPV", $newMultiPv)
+        doAssert state.externalEngine.initialized
+        state.externalEngine.setOption("MultiPV", $newMultiPv)
         state.info fmt"Set MultiPV to: {newMultiPv}"
     of "mincentipawns":
       let newMin = value.parseInt
@@ -168,13 +173,15 @@ proc setOption(state: var AttackingUciState, params: seq[string]) =
         state.info fmt"Set MaxCpLoss to: {newMax}"
     of "hash":
       let newHash = value.parseInt
-      if state.externalEngine.initialized:
-        state.externalEngine.setOption("Hash", $newHash)
+      state.hash = newHash
+      doAssert state.externalEngine.initialized
+      state.externalEngine.setOption("Hash", $newHash)
       state.info fmt"Set Hash to: {newHash}MB"
     of "threads":
       let newThreads = value.parseInt
-      if state.externalEngine.initialized:
-        state.externalEngine.setOption("Threads", $newThreads)
+      state.threads = newThreads
+      doAssert state.externalEngine.initialized
+      state.externalEngine.setOption("Threads", $newThreads)
       state.info fmt"Set Threads to: {newThreads}"
     else:
       state.info fmt"Unknown option: {name}"
@@ -212,9 +219,6 @@ proc setPosition(state: var AttackingUciState, params: seq[string]) =
         break
 
 proc go(state: var AttackingUciState, params: seq[string]) =
-  if not state.externalEngine.initialized:
-    initializeExternalEngine(state)
-
   var limit = Limit()
   var i = 0
 
@@ -283,8 +287,6 @@ proc uciLoop() =
       of "setoption":
         setOption(state, params[1 ..^ 1])
       of "isready":
-        if not state.externalEngine.initialized:
-          initializeExternalEngine(state)
         echo "readyok"
       of "position":
         setPosition(state, params[1 ..^ 1])
@@ -294,14 +296,11 @@ proc uciLoop() =
         break
       of "ucinewgame":
         state.currentGame = newGame()
-        if state.externalEngine.initialized:
-          state.externalEngine.newGame()
+        doAssert state.externalEngine.initialized
+        state.externalEngine.newGame()
       of "stop":
         # For simplicity, we don't support stopping mid-search
         discard
-      of "internalmultipv", "hash", "threads":
-        if params.len >= 2:
-          setOption(state, @["name", params[0], "value", params[1]])
       else:
         state.info fmt"Unknown command: {params[0]}"
     except EOFError:
