@@ -11,8 +11,6 @@ type
     currentGame: Game
     ourName: string = "AttackingEngine"
     oppName: string = "Opponent"
-    searchDepth: int = 15
-    searchTime: float = 1.0
 
 proc info(state: AttackingUciState, s: string) =
   echo "info string ", s
@@ -52,19 +50,17 @@ proc createGameFromPv(baseGame: Game, pvMoves: seq[Move], ourColor: Color, ourNa
 
 proc evaluateAttackingScore(baseGame: Game, pvMoves: seq[Move], ourColor: Color, ourName: string): float =
   let testGame = createGameFromPv(baseGame, pvMoves, ourColor, ourName, "Opponent")
-  var stats = AttackingStats()
 
   try:
-    analyseGame(testGame, ourName, stats)
+    let stats = analyseGame(testGame, ourName)
     return getAttackingScore(getRawFeatureScores(stats))
   except:
     return 0.0
 
-proc selectBestMove(state: var AttackingUciState): Move =
+proc selectBestMove(state: var AttackingUciState, limit: Limit): Move =
   let ourColor = state.currentGame.currentPosition().us
 
   # Get multipv results from external engine
-  let limit = Limit(depth: state.searchDepth, movetimeSeconds: state.searchTime)
   let playResult = state.externalEngine.play(state.currentGame, limit)
 
   var candidates: seq[tuple[move: Move, score: float, attacking: float]] = @[]
@@ -111,68 +107,73 @@ proc uci(state: var AttackingUciState) =
   echo "option name Engine type string default stockfish"
   echo "option name MultiPV type spin default 5 min 1 max 100"
   echo "option name MinCentipawns type spin default -10 min -1000 max 1000"
-  echo "option name SearchDepth type spin default 15 min 1 max 50"
-  echo "option name SearchTime type spin default 1000 min 100 max 60000"
   echo "uciok"
 
 proc setOption(state: var AttackingUciState, params: seq[string]) =
-  if params.len == 4 and params[0] == "name" and params[2] == "value":
-    case params[1].toLowerAscii:
+  let nameIdx = params.find("name")
+  let valueIdx = params.find("value")
+
+  if nameIdx != -1 and valueIdx != -1 and nameIdx + 1 < valueIdx and valueIdx + 1 < params.len:
+    let name = params[nameIdx + 1].toLowerAscii
+    let value = params[valueIdx + 1]
+
+    case name:
     of "engine":
-      state.enginePath = params[3]
+      state.enginePath = value
       state.info fmt"Set external engine to: {state.enginePath}"
-    of "multipv":
-      let newMultiPv = params[3].parseInt
+    of "internalmultipv":
+      let newMultiPv = value.parseInt
       if newMultiPv >= 1 and newMultiPv <= 100:
         state.multipv = newMultiPv
         if state.externalEngine.initialized:
           state.externalEngine.setOption("MultiPV", $newMultiPv)
         state.info fmt"Set MultiPV to: {newMultiPv}"
     of "mincentipawns":
-      let newMin = params[3].parseInt
+      let newMin = value.parseInt
       if newMin >= -1000 and newMin <= 1000:
         state.minCentipawns = newMin
         state.info fmt"Set MinCentipawns to: {newMin}"
-    of "searchdepth":
-      let newDepth = params[3].parseInt
-      if newDepth >= 1 and newDepth <= 50:
-        state.searchDepth = newDepth
-        state.info fmt"Set SearchDepth to: {newDepth}"
-    of "searchtime":
-      let newTime = params[3].parseInt
-      if newTime >= 100 and newTime <= 60000:
-        state.searchTime = newTime.float / 1000.0
-        state.info fmt"Set SearchTime to: {newTime}ms"
+    of "hash":
+      let newHash = value.parseInt
+      if state.externalEngine.initialized:
+        state.externalEngine.setOption("Hash", $newHash)
+      state.info fmt"Set Hash to: {newHash}MB"
+    of "threads":
+      let newThreads = value.parseInt
+      if state.externalEngine.initialized:
+        state.externalEngine.setOption("Threads", $newThreads)
+      state.info fmt"Set Threads to: {newThreads}"
     else:
-      state.info fmt"Unknown option: {params[1]}"
+      state.info fmt"Unknown option: {name}"
+  else:
+    state.info "Invalid setoption parameters"
 
 proc setPosition(state: var AttackingUciState, params: seq[string]) =
-  var index = 0
-  var position: Position
+  if params.len == 0: return
 
-  if params.len >= 1 and params[0] == "startpos":
+  var position: Position
+  let movesIdx = params.find("moves")
+
+  if params[0] == "startpos":
     position = classicalStartPos
-    index = 1
-  elif params.len >= 1 and params[0] == "fen":
-    var fen = ""
-    index = 1
-    while params.len > index and params[index] != "moves":
-      fen &= " " & params[index]
-      index += 1
-    position = fen.strip().toPosition()
+  elif params[0] == "fen":
+    let fenEnd = if movesIdx == -1: params.len else: movesIdx
+    if fenEnd <= 1:
+      state.info "Invalid FEN"
+      return
+    position = params[1 ..< fenEnd].join(" ").toPosition()
   else:
     state.info "Invalid position parameters"
     return
 
   state.currentGame = newGame(startPosition = position)
 
-  if params.len > index and params[index] == "moves":
-    index += 1
-    for i in index..<params.len:
+  if movesIdx != -1 and movesIdx + 1 < params.len:
+    for i in (movesIdx + 1)..<params.len:
       try:
         let move = params[i].toMove(state.currentGame.currentPosition())
         state.currentGame.addMove(move)
-      except:
+      except CatchableError:
         state.info fmt"Invalid move: {params[i]}"
         break
 
@@ -180,30 +181,40 @@ proc go(state: var AttackingUciState, params: seq[string]) =
   if not state.externalEngine.initialized:
     initializeExternalEngine(state)
 
-  # Parse go parameters for time management
-  var searchTime = state.searchTime
-  var searchDepth = state.searchDepth
+  var limit = Limit()
+  var i = 0
 
-  for i in 0..<params.len:
+  template getArg(body: untyped) =
     if i + 1 < params.len:
-      case params[i]:
-      of "depth":
-        searchDepth = params[i + 1].parseInt
-      of "movetime":
-        searchTime = params[i + 1].parseFloat / 1000.0
-      of "wtime", "btime":
-        let timeMs = params[i + 1].parseFloat
-        searchTime = min(timeMs / 20000.0, 5.0)  # Use 1/20th of remaining time, max 5s
-      else:
-        discard
+      inc i
+      let arg {.inject.} = params[i]
+      body
 
-  state.searchTime = searchTime
-  state.searchDepth = searchDepth
+  while i < params.len:
+    case params[i]:
+    of "depth":
+      getArg: limit.depth = arg.parseInt
+    of "nodes":
+      getArg: limit.nodes = arg.parseInt
+    of "movetime":
+      getArg: limit.movetimeSeconds = arg.parseFloat / 1000.0
+    of "wtime":
+      getArg: limit.whiteTimeSeconds = arg.parseFloat / 1000.0
+    of "btime":
+      getArg: limit.blackTimeSeconds = arg.parseFloat / 1000.0
+    of "winc":
+      getArg: limit.whiteIncSeconds = arg.parseFloat / 1000.0
+    of "binc":
+      getArg: limit.blackIncSeconds = arg.parseFloat / 1000.0
+    of "movestogo":
+      getArg: limit.movesToGo = arg.parseInt
+    else: discard
+    inc i
 
   try:
-    let bestMove = selectBestMove(state)
+    let bestMove = selectBestMove(state, limit)
     echo "bestmove ", bestMove
-  except:
+  except CatchableError:
     state.info fmt"Error during search: {getCurrentExceptionMsg()}"
     # Fallback to a legal move
     let legalMoves = state.currentGame.currentPosition().legalMoves()
@@ -223,7 +234,7 @@ proc uciLoop() =
       if params.len == 0:
         continue
 
-      case params[0]:
+      case params[0].toLowerAscii:
       of "uci":
         uci(state)
       of "setoption":
@@ -245,12 +256,15 @@ proc uciLoop() =
       of "stop":
         # For simplicity, we don't support stopping mid-search
         discard
+      of "internalmultipv", "hash", "threads":
+        if params.len >= 2:
+          setOption(state, @["name", params[0], "value", params[1]])
       else:
         state.info fmt"Unknown command: {params[0]}"
 
     except EOFError:
       break
-    except:
+    except CatchableError:
       state.info fmt"Error processing command: {getCurrentExceptionMsg()}"
 
 when isMainModule:

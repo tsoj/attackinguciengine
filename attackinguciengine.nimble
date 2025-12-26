@@ -12,4 +12,4 @@ bin           = @["attackinguciengine"]
 
 requires "nim >= 2.2.4"
 requires "nimchess >= 0.2.2"
-requires "https://github.com/tsoj/chessattackingscore >= 0.2.0"
+requires "https://github.com/tsoj/chessattackingscore >= 0.3.0"
